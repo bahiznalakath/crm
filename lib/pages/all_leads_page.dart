@@ -14,65 +14,206 @@ class AllLeadsPage extends StatefulWidget {
 
 class _AllLeadsPageState extends State<AllLeadsPage> {
   final repo = LeadRepository();
-  final int pageSize = 50;
+  final ScrollController _scrollController = ScrollController();
 
-  List<QueryDocumentSnapshot> pageStarts = [];
+  // For web/tablet pagination
+  int webPageSize = 10;
+  List<DocumentSnapshot> pageStarts = [];
   List<DocumentSnapshot> currentDocs = [];
+  bool hasNextPage = false;
+
+  // For mobile infinite scroll
+  List<DocumentSnapshot> allMobileDocs = [];
+  DocumentSnapshot? lastMobileDoc;
+  bool hasMoreMobile = true;
+  int mobilePageSize = 10;
+
   bool loading = false;
   String? statusFilter;
+  bool _isInitialized = false;
 
   @override
   void initState() {
     super.initState();
-    _loadFirst();
+    _scrollController.addListener(_onScroll);
+    // Don't call _loadFirst here - move to didChangeDependencies
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Load data only once after the widget is fully initialized
+    if (!_isInitialized) {
+      _isInitialized = true;
+      _loadFirst();
+    }
+  }
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  // Scroll listener for mobile infinite scroll
+  void _onScroll() {
+    if (!ResponsiveLayout.isMobile(context)) return;
+    if (_scrollController.position.pixels >= _scrollController.position.maxScrollExtent * 0.8) {
+      if (!loading && hasMoreMobile) {
+        _loadMoreMobile();
+      }
+    }
   }
 
   Future<void> _loadFirst() async {
     setState(() => loading = true);
-    final snap = await repo.getFirstPage(limit: pageSize, statusFilter: statusFilter);
-    currentDocs = snap.docs;
-    debugPrint("snap:${snap}");
-    debugPrint("Print:${currentDocs}");
-    pageStarts = [];
-    if (snap.docs.isNotEmpty) pageStarts.add(snap.docs.first);
+
+    if (ResponsiveLayout.isMobile(context)) {
+      // Mobile: load first batch for infinite scroll
+      allMobileDocs.clear();
+      lastMobileDoc = null;
+      hasMoreMobile = true;
+
+      final snap = await repo.getFirstPage(limit: mobilePageSize, statusFilter: statusFilter);
+      allMobileDocs = snap.docs;
+      lastMobileDoc = snap.docs.isNotEmpty ? snap.docs.last : null;
+      hasMoreMobile = snap.docs.length >= mobilePageSize;
+      debugPrint("Mobile first load: ${allMobileDocs.length} docs");
+    } else {
+      // Web/Tablet: load first page + check if there's a next page
+      pageStarts.clear();
+
+      // Load one extra to check if there's more data
+      final snap = await repo.getFirstPage(limit: webPageSize + 1, statusFilter: statusFilter);
+
+      if (snap.docs.length > webPageSize) {
+        // There's more data
+        currentDocs = snap.docs.sublist(0, webPageSize);
+        hasNextPage = true;
+      } else {
+        // No more data
+        currentDocs = snap.docs;
+        hasNextPage = false;
+      }
+
+      if (currentDocs.isNotEmpty) {
+        pageStarts.add(currentDocs.first);
+      }
+
+      debugPrint("Web/Tablet first load: ${currentDocs.length} docs, hasNext: $hasNextPage");
+    }
+
     setState(() => loading = false);
   }
 
-  Future<void> _next() async {
-    if (currentDocs.isEmpty) return;
+  // Mobile: Load more for infinite scroll
+  Future<void> _loadMoreMobile() async {
+    if (loading || !hasMoreMobile || lastMobileDoc == null) return;
+
     setState(() => loading = true);
-    final last = currentDocs.last;
-    final snap = await repo.getPage(startAfterDoc: last, limit: pageSize, statusFilter: statusFilter);
+
+    final snap = await repo.getPage(
+      startAfterDoc: lastMobileDoc!,
+      limit: mobilePageSize,
+      statusFilter: statusFilter,
+    );
+
     if (snap.docs.isEmpty) {
-      setState(() => loading = false);
+      hasMoreMobile = false;
+    } else {
+      allMobileDocs.addAll(snap.docs);
+      lastMobileDoc = snap.docs.last;
+      hasMoreMobile = snap.docs.length >= mobilePageSize;
+      debugPrint("Mobile loaded more: total ${allMobileDocs.length} docs");
+    }
+
+    setState(() => loading = false);
+  }
+
+  // Web/Tablet: Next page
+  Future<void> _next() async {
+    if (currentDocs.isEmpty || !hasNextPage) return;
+
+    setState(() => loading = true);
+
+    final last = currentDocs.last;
+
+    // Load one extra to check if there's more data after this page
+    final snap = await repo.getPage(
+      startAfterDoc: last,
+      limit: webPageSize + 1,
+      statusFilter: statusFilter,
+    );
+
+    if (snap.docs.isEmpty) {
+      setState(() {
+        loading = false;
+        hasNextPage = false;
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No more leads')),
+        );
+      }
       return;
     }
-    pageStarts.add(snap.docs.first);
-    currentDocs = snap.docs;
+
+    if (snap.docs.length > webPageSize) {
+      // There's more data after this page
+      currentDocs = snap.docs.sublist(0, webPageSize);
+      hasNextPage = true;
+    } else {
+      // This is the last page
+      currentDocs = snap.docs;
+      hasNextPage = false;
+    }
+
+    if (currentDocs.isNotEmpty) {
+      pageStarts.add(currentDocs.first);
+    }
+
     setState(() => loading = false);
   }
 
+  // Web/Tablet: Previous page
   Future<void> _previous() async {
     if (pageStarts.length <= 1) {
       await _loadFirst();
       return;
     }
+
     setState(() => loading = true);
+
     pageStarts.removeLast();
     final startDoc = pageStarts.isNotEmpty ? pageStarts.last : null;
+
     QuerySnapshot snap;
     if (startDoc == null) {
-      snap = await repo.getFirstPage(limit: pageSize, statusFilter: statusFilter);
+      snap = await repo.getFirstPage(limit: webPageSize + 1, statusFilter: statusFilter);
     } else {
-      snap = await repo.getPage(startAfterDoc: startDoc, limit: pageSize, statusFilter: statusFilter);
+      snap = await repo.getPage(
+        startAfterDoc: startDoc,
+        limit: webPageSize + 1,
+        statusFilter: statusFilter,
+      );
     }
-    currentDocs = snap.docs;
+
+    if (snap.docs.length > webPageSize) {
+      currentDocs = snap.docs.sublist(0, webPageSize);
+      hasNextPage = true;
+    } else {
+      currentDocs = snap.docs;
+      hasNextPage = false;
+    }
+
     setState(() => loading = false);
   }
 
   DataRow _makeRow(DocumentSnapshot doc) {
     final lead = Lead.fromSnapshot(doc);
-    final createdStr = lead.createdAt != null ? DateFormat.yMd().add_jm().format(lead.createdAt.toDate()) : '—';
+    final createdStr = lead.createdAt != null
+        ? DateFormat.yMd().add_jm().format(lead.createdAt.toDate())
+        : '—';
     return DataRow(cells: [
       DataCell(Text(lead.leadName)),
       DataCell(Text(lead.mobile)),
@@ -82,65 +223,233 @@ class _AllLeadsPageState extends State<AllLeadsPage> {
     ]);
   }
 
+  Widget _buildMobileView() {
+    return Column(
+      children: [
+        // Header with filter
+        Padding(
+          padding: const EdgeInsets.all(12),
+          child: Row(
+            children: [
+              const Text(
+                'All Leads',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+              const Spacer(),
+              DropdownButton<String>(
+                hint: const Text('Filter'),
+                value: statusFilter,
+                items: const [
+                  DropdownMenuItem(value: null, child: Text('All')),
+                  DropdownMenuItem(value: 'New', child: Text('New')),
+                  DropdownMenuItem(value: 'Contacted', child: Text('Contacted')),
+                  DropdownMenuItem(value: 'Interested', child: Text('Interested')),
+                  DropdownMenuItem(value: 'Follow-up', child: Text('Follow-up')),
+                  DropdownMenuItem(value: 'Meeting Scheduled', child: Text('Meeting Scheduled')),
+                  DropdownMenuItem(value: 'Proposal Sent', child: Text('Proposal Sent')),
+                  DropdownMenuItem(value: 'Negotiation', child: Text('Negotiation')),
+                  DropdownMenuItem(value: 'Converted', child: Text('Converted')),
+                  DropdownMenuItem(value: 'Not Interested', child: Text('Not Interested')),
+                  DropdownMenuItem(value: 'Invalid', child: Text('Invalid')),
+                  DropdownMenuItem(value: 'On Hold', child: Text('On Hold')),
+                  DropdownMenuItem(value: 'Closed', child: Text('Closed')),
+                ],
+                onChanged: (v) async {
+                  setState(() {
+                    statusFilter = v;
+                  });
+                  await _loadFirst();
+                },
+              ),
+            ],
+          ),
+        ),
+        if (loading && allMobileDocs.isEmpty)
+          const Expanded(child: Center(child: CircularProgressIndicator())),
+        if (allMobileDocs.isEmpty && !loading)
+          const Expanded(child: Center(child: Text('No leads found'))),
+        if (allMobileDocs.isNotEmpty)
+          Expanded(
+            child: ListView.builder(
+              controller: _scrollController,
+              itemCount: allMobileDocs.length + (hasMoreMobile ? 1 : 0),
+              itemBuilder: (context, index) {
+                if (index >= allMobileDocs.length) {
+                  return const Center(
+                    child: Padding(
+                      padding: EdgeInsets.all(16.0),
+                      child: CircularProgressIndicator(),
+                    ),
+                  );
+                }
+                final lead = Lead.fromSnapshot(allMobileDocs[index]);
+                final createdStr = lead.createdAt != null
+                    ? DateFormat.yMd().add_jm().format(lead.createdAt.toDate())
+                    : '—';
+                return Card(
+                  margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  child: ListTile(
+                    title: Text(
+                      lead.leadName,
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    subtitle: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const SizedBox(height: 4),
+                        Text('📱 ${lead.mobile}'),
+                        Text('📋 ${lead.projectName}'),
+                        Text('📅 $createdStr', style: const TextStyle(fontSize: 12)),
+                      ],
+                    ),
+                    trailing: Chip(
+                      label: Text(
+                        lead.status,
+                        style: const TextStyle(fontSize: 11),
+                      ),
+                      backgroundColor: _getStatusColor(lead.status),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _buildWebTabletView() {
+    return Padding(
+      padding: const EdgeInsets.all(12),
+      child: Column(
+        children: [
+          // Header with filter and refresh
+          Row(
+            children: [
+              const Text(
+                'All Leads',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(width: 16),
+              Text(
+                'Page ${pageStarts.length} • Showing ${currentDocs.length} leads',
+                style: TextStyle(color: Colors.grey[600], fontSize: 14),
+              ),
+              const Spacer(),
+              DropdownButton<String>(
+                hint: const Text('Filter by Status'),
+                value: statusFilter,
+                items: const [
+                  DropdownMenuItem(value: null, child: Text('All')),
+                  DropdownMenuItem(value: 'New', child: Text('New')),
+                  DropdownMenuItem(value: 'Contacted', child: Text('Contacted')),
+                  DropdownMenuItem(value: 'Interested', child: Text('Interested')),
+                  DropdownMenuItem(value: 'Follow-up', child: Text('Follow-up')),
+                  DropdownMenuItem(value: 'Meeting Scheduled', child: Text('Meeting Scheduled')),
+                  DropdownMenuItem(value: 'Proposal Sent', child: Text('Proposal Sent')),
+                  DropdownMenuItem(value: 'Negotiation', child: Text('Negotiation')),
+                  DropdownMenuItem(value: 'Converted', child: Text('Converted')),
+                  DropdownMenuItem(value: 'Not Interested', child: Text('Not Interested')),
+                  DropdownMenuItem(value: 'Invalid', child: Text('Invalid')),
+                  DropdownMenuItem(value: 'On Hold', child: Text('On Hold')),
+                  DropdownMenuItem(value: 'Closed', child: Text('Closed')),
+                ],
+                onChanged: (v) async {
+                  setState(() => statusFilter = v);
+                  await _loadFirst();
+                },
+              ),
+              const SizedBox(width: 8),
+              ElevatedButton.icon(
+                onPressed: _loadFirst,
+                icon: const Icon(Icons.refresh, size: 18),
+                label: const Text('Refresh'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          if (loading) const LinearProgressIndicator(),
+          const SizedBox(height: 8),
+          Expanded(
+            child: currentDocs.isEmpty && !loading
+                ? const Center(child: Text('No leads found'))
+                : SingleChildScrollView(
+              scrollDirection: Axis.vertical,
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: DataTable(
+                  columns: const [
+                    DataColumn(label: Text('Name')),
+                    DataColumn(label: Text('Mobile')),
+                    DataColumn(label: Text('Project')),
+                    DataColumn(label: Text('Status')),
+                    DataColumn(label: Text('Created')),
+                  ],
+                  rows: currentDocs.map(_makeRow).toList(),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          // Pagination controls
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              ElevatedButton.icon(
+                onPressed: pageStarts.length <= 1 || loading ? null : _previous,
+                icon: const Icon(Icons.arrow_back, size: 18),
+                label: const Text('Previous'),
+              ),
+              const SizedBox(width: 12),
+              // Only show Next button if there's more data
+              if (hasNextPage)
+                ElevatedButton.icon(
+                  onPressed: loading ? null : _next,
+                  icon: const Icon(Icons.arrow_forward, size: 18),
+                  label: const Text('Next'),
+                ),
+            ],
+          ),
+          const SizedBox(height: 8),
+        ],
+      ),
+    );
+  }
+
+  Color _getStatusColor(String status) {
+    switch (status) {
+      case 'New':
+        return Colors.blue.shade100;
+      case 'Contacted':
+        return Colors.orange.shade100;
+      case 'Interested':
+        return Colors.green.shade100;
+      case 'Follow-up':
+        return Colors.amber.shade100;
+      case 'Meeting Scheduled':
+        return Colors.purple.shade100;
+      case 'Proposal Sent':
+        return Colors.cyan.shade100;
+      case 'Negotiation':
+        return Colors.indigo.shade100;
+      case 'Converted':
+        return Colors.green.shade300;
+      case 'Not Interested':
+        return Colors.red.shade100;
+      case 'Invalid':
+        return Colors.grey.shade400;
+      case 'On Hold':
+        return Colors.yellow.shade200;
+      case 'Closed':
+        return Colors.grey.shade300;
+      default:
+        return Colors.grey.shade200;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final isMobile = ResponsiveLayout.isMobile(context);
-    return Padding(
-      padding: const EdgeInsets.all(12),
-      child: Column(children: [
-        Row(children: [
-          const Text('All Leads', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-          const Spacer(),
-          DropdownButton<String>(
-            hint: const Text('Filter'),
-            value: statusFilter,
-            items: const [
-              DropdownMenuItem(value: null, child: Text('All')),
-              DropdownMenuItem(value: 'New', child: Text('New')),
-              DropdownMenuItem(value: 'Follow-up', child: Text('Follow-up')),
-              DropdownMenuItem(value: 'Closed', child: Text('Closed')),
-            ],
-            onChanged: (v) async {
-              setState(() => statusFilter = v);
-              await _loadFirst();
-            },
-          ),
-          const SizedBox(width: 8),
-          ElevatedButton(onPressed: _loadFirst, child: const Text('Refresh')),
-        ]),
-        const SizedBox(height: 12),
-        if (loading) const LinearProgressIndicator(),
-        Expanded(
-          child: currentDocs.isEmpty && !loading
-              ? const Center(child: Text('No leads found'))
-              : SingleChildScrollView(
-            child: isMobile
-                ? Column(children: currentDocs.map((d) {
-              final lead = Lead.fromSnapshot(d);
-              return ListTile(
-                title: Text(lead.leadName),
-                subtitle: Text('${lead.mobile} • ${lead.projectName}'),
-                trailing: Text(lead.status),
-              );
-            }).toList())
-                : DataTable(
-              columns: const [
-                DataColumn(label: Text('Name')),
-                DataColumn(label: Text('Mobile')),
-                DataColumn(label: Text('Project')),
-                DataColumn(label: Text('Status')),
-                DataColumn(label: Text('Created')),
-              ],
-              rows: currentDocs.map(_makeRow).toList(),
-            ),
-          ),
-        ),
-        Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-          ElevatedButton(onPressed: pageStarts.isEmpty ? null : _previous, child: const Text('Previous')),
-          const SizedBox(width: 12),
-          ElevatedButton(onPressed: currentDocs.length < pageSize ? null : _next, child: const Text('Next')),
-        ]),
-      ]),
-    );
+    return isMobile ? _buildMobileView() : _buildWebTabletView();
   }
 }

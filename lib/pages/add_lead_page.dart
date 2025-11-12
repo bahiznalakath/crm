@@ -36,11 +36,76 @@ class _AddLeadPageState extends ConsumerState<AddLeadPage> {
         projectName: _projectController.text.trim(),
         status: _status,
       );
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Lead added')));
+
+      // Clear all fields
+      _nameController.clear();
+      _mobileController.clear();
+      _projectController.clear();
       _formKey.currentState!.reset();
-      _status = 'New';
+      setState(() => _status = 'New');
+
+      // Show success popup dialog
+      if (mounted) {
+        showDialog(
+          context: context,
+          builder: (BuildContext context) {
+            return AlertDialog(
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(15),
+              ),
+              title: Row(
+                children: [
+                  Icon(Icons.check_circle, color: Colors.green, size: 28),
+                  const SizedBox(width: 10),
+                  const Text('Success'),
+                ],
+              ),
+              content: const Text('Lead added successfully!'),
+              actions: [
+                TextButton(
+                  onPressed: () {
+                    _nameController.clear();
+                    _mobileController.clear();
+                    _projectController.clear();
+                    _formKey.currentState!.reset();
+                    setState(() => _status = 'New');
+                    Navigator.of(context).pop();
+                  },
+                  child: const Text('OK'),
+                ),
+              ],
+            );
+          },
+        );
+      }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
+      // Show error popup dialog
+      if (mounted) {
+        showDialog(
+          context: context,
+          builder: (BuildContext context) {
+            return AlertDialog(
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(15),
+              ),
+              title: Row(
+                children: [
+                  Icon(Icons.error, color: Colors.red, size: 28),
+                  const SizedBox(width: 10),
+                  const Text('Error'),
+                ],
+              ),
+              content: Text('Failed to add lead: $e'),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: const Text('OK'),
+                ),
+              ],
+            );
+          },
+        );
+      }
     } finally {
       setState(() => _loading = false);
     }
@@ -60,18 +125,21 @@ class _AddLeadPageState extends ConsumerState<AddLeadPage> {
               child: Form(
                 key: _formKey,
                 child: Column(mainAxisSize: MainAxisSize.min, children: [
-                  Text('Add Lead', style: Theme.of(context).textTheme.headlineSmall),
+                  Text('Add Lead',
+                      style: Theme.of(context).textTheme.headlineSmall),
                   const SizedBox(height: 16),
                   TextFormField(
                     controller: _nameController,
                     decoration: const InputDecoration(labelText: 'Lead Name'),
-                    validator: (v) => (v?.trim().isEmpty ?? true) ? 'Required' : null,
+                    validator: (v) =>
+                        (v?.trim().isEmpty ?? true) ? 'Required' : null,
                   ),
                   const SizedBox(height: 12),
                   TextFormField(
                     controller: _mobileController,
                     keyboardType: TextInputType.phone,
-                    decoration: const InputDecoration(labelText: 'Mobile Number'),
+                    decoration:
+                        const InputDecoration(labelText: 'Mobile Number'),
                     validator: (v) {
                       if (v == null || v.trim().isEmpty) return 'Required';
                       if (v.trim().length < 6) return 'Invalid mobile';
@@ -81,14 +149,36 @@ class _AddLeadPageState extends ConsumerState<AddLeadPage> {
                   const SizedBox(height: 12),
                   TextFormField(
                     controller: _projectController,
-                    decoration: const InputDecoration(labelText: 'Project Name'),
+                    decoration:
+                        const InputDecoration(labelText: 'Project Name'),
                   ),
                   const SizedBox(height: 12),
                   DropdownButtonFormField<String>(
                     value: _status,
                     items: const [
                       DropdownMenuItem(value: 'New', child: Text('New')),
-                      DropdownMenuItem(value: 'Follow-up', child: Text('Follow-up')),
+                      DropdownMenuItem(
+                          value: 'Contacted', child: Text('Contacted')),
+                      DropdownMenuItem(
+                          value: 'Interested', child: Text('Interested')),
+                      DropdownMenuItem(
+                          value: 'Follow-up', child: Text('Follow-up')),
+                      DropdownMenuItem(
+                          value: 'Meeting Scheduled',
+                          child: Text('Meeting Scheduled')),
+                      DropdownMenuItem(
+                          value: 'Proposal Sent', child: Text('Proposal Sent')),
+                      DropdownMenuItem(
+                          value: 'Negotiation', child: Text('Negotiation')),
+                      DropdownMenuItem(
+                          value: 'Converted', child: Text('Converted')),
+                      DropdownMenuItem(
+                          value: 'Not Interested',
+                          child: Text('Not Interested')),
+                      DropdownMenuItem(
+                          value: 'Invalid', child: Text('Invalid')),
+                      DropdownMenuItem(
+                          value: 'On Hold', child: Text('On Hold')),
                       DropdownMenuItem(value: 'Closed', child: Text('Closed')),
                     ],
                     onChanged: (v) => setState(() => _status = v ?? 'New'),
@@ -98,15 +188,15 @@ class _AddLeadPageState extends ConsumerState<AddLeadPage> {
                   _loading
                       ? const CircularProgressIndicator()
                       : SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton(
-                      onPressed: _save,
-                      child: const Padding(
-                        padding: EdgeInsets.symmetric(vertical: 12),
-                        child: Text('Save'),
-                      ),
-                    ),
-                  ),
+                          width: double.infinity,
+                          child: ElevatedButton(
+                            onPressed: _save,
+                            child: const Padding(
+                              padding: EdgeInsets.symmetric(vertical: 12),
+                              child: Text('Save'),
+                            ),
+                          ),
+                        ),
                 ]),
               ),
             ),
